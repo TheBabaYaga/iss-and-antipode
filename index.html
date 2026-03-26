@@ -343,6 +343,7 @@
       document.getElementById('lon-val').textContent =
         `${Math.abs(lon).toFixed(4)}° ${lon >= 0 ? 'E' : 'W'}`;
       document.getElementById('connection-lost').style.display = 'none';
+      updateOrbitTrail(lat, lon);
     }
 
     // ── API Polling ──────────────────────────────────────────
@@ -365,6 +366,75 @@
     }
     fetchISS();
     setInterval(fetchISS, POLL_INTERVAL);
+
+    // ── Orbit Trail ──────────────────────────────────────────
+    const ORBIT_POINTS = 200;
+    const orbitGeo = new THREE.BufferGeometry();
+    const orbitPositions = new Float32Array(ORBIT_POINTS * 3);
+    const orbitColors = new Float32Array(ORBIT_POINTS * 4);
+    orbitGeo.setAttribute('position', new THREE.BufferAttribute(orbitPositions, 3));
+    orbitGeo.setAttribute('color', new THREE.BufferAttribute(orbitColors, 4));
+
+    const orbitMat = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      depthWrite: false,
+    });
+    const orbitLine = new THREE.Line(orbitGeo, orbitMat);
+    scene.add(orbitLine);
+
+    function updateOrbitTrail(lat, lon) {
+      // Current position as the midpoint of the trail
+      const incRad = ORBIT_INCLINATION * (Math.PI / 180);
+      const lonRad = lon * (Math.PI / 180);
+      const latRad = lat * (Math.PI / 180);
+
+      // Estimate the orbital phase from current latitude
+      // sin(phase) * sin(inclination) = sin(latitude)
+      const sinPhase = Math.sin(latRad) / Math.sin(incRad);
+      const phase = Math.asin(Math.max(-1, Math.min(1, sinPhase)));
+      // Determine if ascending or descending based on the longitude trend
+      const currentPhase = lat >= 0 ? phase : Math.PI - phase;
+
+      // Ascending node longitude
+      const ascNode = lonRad - Math.atan2(Math.sin(currentPhase) * Math.cos(incRad), Math.cos(currentPhase));
+
+      const R = EARTH_RADIUS + ISS_ALTITUDE * 0.5;
+
+      for (let i = 0; i < ORBIT_POINTS; i++) {
+        const t = (i / ORBIT_POINTS) * Math.PI * 2;
+
+        // Orbital position in the inclined plane
+        const ox = Math.cos(t);
+        const oy = Math.sin(t) * Math.sin(incRad);
+        const oz = Math.sin(t) * Math.cos(incRad);
+
+        // Rotate by ascending node
+        const rx = ox * Math.cos(ascNode) - oz * Math.sin(ascNode);
+        const rz = ox * Math.sin(ascNode) + oz * Math.cos(ascNode);
+
+        // Convert to Three.js coordinates (Y-up)
+        const phi = Math.acos(oy);
+        const theta = Math.atan2(rz, rx);
+        orbitPositions[i * 3]     = -R * Math.sin(phi) * Math.cos(theta);
+        orbitPositions[i * 3 + 1] =  R * Math.cos(phi);
+        orbitPositions[i * 3 + 2] =  R * Math.sin(phi) * Math.sin(theta);
+
+        // Fade: brightest near the ISS phase, fading further away
+        const dist = Math.abs(t - currentPhase) < Math.PI
+          ? Math.abs(t - currentPhase)
+          : Math.PI * 2 - Math.abs(t - currentPhase);
+        const alpha = Math.max(0.05, 1.0 - dist / Math.PI);
+
+        orbitColors[i * 4]     = 1.0;   // R
+        orbitColors[i * 4 + 1] = 0.3;   // G
+        orbitColors[i * 4 + 2] = 0.3;   // B
+        orbitColors[i * 4 + 3] = alpha * 0.5;
+      }
+
+      orbitGeo.attributes.position.needsUpdate = true;
+      orbitGeo.attributes.color.needsUpdate = true;
+    }
 
     // ── Resize handler ───────────────────────────────────────
     window.addEventListener('resize', () => {
