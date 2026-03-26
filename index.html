@@ -145,6 +145,9 @@
       idleTimer = setTimeout(() => { controls.autoRotate = true; }, AUTO_ROTATE_DELAY);
     }
     renderer.domElement.addEventListener('pointerdown', resetIdleTimer);
+    renderer.domElement.addEventListener('pointermove', (e) => {
+      if (e.buttons > 0) resetIdleTimer();
+    });
     renderer.domElement.addEventListener('wheel', resetIdleTimer);
 
     // ── Starfield ────────────────────────────────────────────
@@ -165,8 +168,10 @@
       scene.add(new THREE.Points(starGeo, starMat));
     }
 
-    // ── Ambient light (so textures are visible) ──────────────
-    scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+    // ── Lighting ──────────────────────────────────────────────
+    scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+    const sunLight = new THREE.DirectionalLight(0xffffff, 1.5);
+    scene.add(sunLight);
 
     // ── Earth globe ──────────────────────────────────────────
     const textureLoader = new THREE.TextureLoader();
@@ -219,10 +224,11 @@
       side: THREE.FrontSide,
       depthWrite: false,
     });
-    scene.add(new THREE.Mesh(atmosphereGeo, atmosphereMat));
+    earthGroup.add(new THREE.Mesh(atmosphereGeo, atmosphereMat));
 
     // ── Day/Night shading ────────────────────────────────────
-    // Compute sun direction from current UTC time
+    // Compute sun direction from current UTC time (reuses cached Vector3)
+    const _sunDir = new THREE.Vector3();
     function getSunDirection() {
       const now = new Date();
       const dayOfYear = Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 86400000);
@@ -233,7 +239,7 @@
       // Solar declination (approximate)
       const declination = -23.44 * Math.cos((2 * Math.PI / 365) * (dayOfYear + 10)) * (Math.PI / 180);
 
-      return new THREE.Vector3(
+      return _sunDir.set(
         Math.cos(declination) * Math.cos(solarLon),
         Math.sin(declination),
         Math.cos(declination) * Math.sin(solarLon)
@@ -380,7 +386,6 @@
         hasPosition = true;
       }
       lastFetchTime = Date.now();
-      consecutiveErrors = 0;
 
       // Compute antipodal point
       const antiLat = -lat;
@@ -400,7 +405,6 @@
         `${Math.abs(antiLat).toFixed(4)}° ${antiLat >= 0 ? 'N' : 'S'}`;
       document.getElementById('anti-lon-val').textContent =
         `${Math.abs(antiLon).toFixed(4)}° ${antiLon >= 0 ? 'E' : 'W'}`;
-      document.getElementById('connection-lost').style.display = 'none';
       updateOrbitTrail(lat, lon);
     }
 
@@ -410,6 +414,8 @@
         const res = await fetch('http://api.open-notify.org/iss-now.json');
         const data = await res.json();
         if (data.message === 'success') {
+          consecutiveErrors = 0;
+          document.getElementById('connection-lost').style.display = 'none';
           updateISSPosition(
             parseFloat(data.iss_position.latitude),
             parseFloat(data.iss_position.longitude)
@@ -443,30 +449,45 @@
     const ORBIT_POINTS = 200;
     const orbitGeo = new THREE.BufferGeometry();
     const orbitPositions = new Float32Array(ORBIT_POINTS * 3);
-    const orbitColors = new Float32Array(ORBIT_POINTS * 4);
+    const orbitAlphas = new Float32Array(ORBIT_POINTS);
     orbitGeo.setAttribute('position', new THREE.BufferAttribute(orbitPositions, 3));
-    orbitGeo.setAttribute('color', new THREE.BufferAttribute(orbitColors, 4));
+    orbitGeo.setAttribute('alpha', new THREE.BufferAttribute(orbitAlphas, 1));
 
-    const orbitMat = new THREE.LineBasicMaterial({
-      vertexColors: true,
+    const orbitMat = new THREE.ShaderMaterial({
+      vertexShader: `
+        attribute float alpha;
+        varying float vAlpha;
+        void main() {
+          vAlpha = alpha;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        varying float vAlpha;
+        void main() {
+          gl_FragColor = vec4(1.0, 0.3, 0.3, vAlpha);
+        }
+      `,
       transparent: true,
       depthWrite: false,
     });
     const orbitLine = new THREE.Line(orbitGeo, orbitMat);
     scene.add(orbitLine);
 
+    let prevLat = null;
     function updateOrbitTrail(lat, lon) {
-      // Current position as the midpoint of the trail
       const incRad = ORBIT_INCLINATION * (Math.PI / 180);
       const lonRad = lon * (Math.PI / 180);
       const latRad = lat * (Math.PI / 180);
 
-      // Estimate the orbital phase from current latitude
-      // sin(phase) * sin(inclination) = sin(latitude)
+      // Estimate orbital phase from current latitude
       const sinPhase = Math.sin(latRad) / Math.sin(incRad);
       const phase = Math.asin(Math.max(-1, Math.min(1, sinPhase)));
-      // Determine if ascending or descending based on the longitude trend
-      const currentPhase = lat >= 0 ? phase : Math.PI - phase;
+
+      // Determine ascending vs descending from latitude change
+      const ascending = prevLat !== null ? (lat - prevLat) >= 0 : true;
+      prevLat = lat;
+      const currentPhase = ascending ? phase : Math.PI - phase;
 
       // Ascending node longitude
       const ascNode = lonRad - Math.atan2(Math.sin(currentPhase) * Math.cos(incRad), Math.cos(currentPhase));
@@ -496,16 +517,11 @@
         const dist = Math.abs(t - currentPhase) < Math.PI
           ? Math.abs(t - currentPhase)
           : Math.PI * 2 - Math.abs(t - currentPhase);
-        const alpha = Math.max(0.05, 1.0 - dist / Math.PI);
-
-        orbitColors[i * 4]     = 1.0;   // R
-        orbitColors[i * 4 + 1] = 0.3;   // G
-        orbitColors[i * 4 + 2] = 0.3;   // B
-        orbitColors[i * 4 + 3] = alpha * 0.5;
+        orbitAlphas[i] = Math.max(0.05, (1.0 - dist / Math.PI) * 0.5);
       }
 
       orbitGeo.attributes.position.needsUpdate = true;
-      orbitGeo.attributes.color.needsUpdate = true;
+      orbitGeo.attributes.alpha.needsUpdate = true;
     }
 
     // ── Resize handler ───────────────────────────────────────
@@ -524,22 +540,26 @@
       if (hasPosition) {
         currentPos.lerp(targetPos, 0.08);
         issGroup.position.copy(currentPos);
-        issGroup.lookAt(currentPos.clone().multiplyScalar(2));
+        issGroup.lookAt(currentPos.clone().normalize().multiplyScalar(100));
 
         // Lerp antipodal position
         antiCurrentPos.lerp(antiTargetPos, 0.08);
         antiGroup.position.copy(antiCurrentPos);
-        antiGroup.lookAt(antiCurrentPos.clone().multiplyScalar(2));
+        antiGroup.lookAt(antiCurrentPos.clone().normalize().multiplyScalar(100));
       }
 
-      // Update "updated X seconds ago"
+      // Update "updated X seconds ago" (only when value changes)
       if (lastFetchTime) {
         const ago = Math.floor((Date.now() - lastFetchTime) / 1000);
-        document.getElementById('updated-time').textContent = `Updated: ${ago}s ago`;
+        const el = document.getElementById('updated-time');
+        const text = `Updated: ${ago}s ago`;
+        if (el.textContent !== text) el.textContent = text;
       }
 
-      // Update sun position every frame (cheap — just trig)
-      nightMat.uniforms.sunDir.value.copy(getSunDirection());
+      // Update sun position every frame and sync directional light
+      const sunDir = getSunDirection();
+      nightMat.uniforms.sunDir.value.copy(sunDir);
+      sunLight.position.copy(sunDir).multiplyScalar(50);
 
       renderer.render(scene, camera);
     }
