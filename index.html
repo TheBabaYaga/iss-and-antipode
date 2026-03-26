@@ -127,7 +127,7 @@
     // ── Constants ────────────────────────────────────────────
     const EARTH_RADIUS = 5;
     const ISS_ALTITUDE = 0.15;          // visual height above globe
-    const POLL_INTERVAL = 1000;         // 1 second
+    const POLL_INTERVAL = 5000;         // 5 seconds
     const AUTO_ROTATE_DELAY = 5000;     // 5 seconds idle → auto-rotate
     const ORBIT_PERIOD = 92.68 * 60;    // seconds (one ISS orbit)
     const ORBIT_INCLINATION = 51.6;     // degrees
@@ -493,15 +493,12 @@
     // ── API Polling ──────────────────────────────────────────
     async function fetchISS() {
       try {
-        const res = await fetch('http://api.open-notify.org/iss-now.json');
+        const res = await fetch('https://api.wheretheiss.at/v1/satellites/25544');
         const data = await res.json();
-        if (data.message === 'success') {
+        if (data.latitude !== undefined) {
           consecutiveErrors = 0;
           document.getElementById('connection-lost').style.display = 'none';
-          updateISSPosition(
-            parseFloat(data.iss_position.latitude),
-            parseFloat(data.iss_position.longitude)
-          );
+          updateISSPosition(data.latitude, data.longitude);
         }
       } catch {
         consecutiveErrors++;
@@ -516,9 +513,9 @@
     // ── Crew Data (fetched once) ─────────────────────────────
     async function fetchCrew() {
       try {
-        const res = await fetch('http://api.open-notify.org/astros.json');
+        const res = await fetch('https://corquaid.github.io/international-space-station-APIs/JSON/people-in-space.json');
         const data = await res.json();
-        const issCrew = data.people.filter(p => p.craft === 'ISS');
+        const issCrew = data.people.filter(p => p.iss === true);
         document.getElementById('crew-count').textContent = `${issCrew.length} aboard`;
         document.getElementById('crew-list').innerHTML = issCrew.map(p => p.name).join('<br>');
       } catch {
