@@ -69,6 +69,8 @@
     <div class="title">ISS LIVE STATUS</div>
     <div class="row"><span class="label">LAT</span>&ensp;<span class="value" id="lat-val">—</span></div>
     <div class="row"><span class="label">LON</span>&ensp;<span class="value" id="lon-val">—</span></div>
+    <div class="row" style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(0,221,255,0.15);"><span class="label" style="color:rgba(0,221,255,0.5);">A-LAT</span>&ensp;<span class="value" id="anti-lat-val" style="color:#00ddff;">—</span></div>
+    <div class="row"><span class="label" style="color:rgba(0,221,255,0.5);">A-LON</span>&ensp;<span class="value" id="anti-lon-val" style="color:#00ddff;">—</span></div>
     <div class="row"><span class="label">ALT</span>&ensp;<span class="value">~408 km</span></div>
     <div class="row"><span class="label">SPD</span>&ensp;<span class="value">~27,600 km/h</span></div>
     <div class="divider">
@@ -320,9 +322,53 @@
     labelSprite.position.set(0.5, 0.2, 0);
     issGroup.add(labelSprite);
 
+    // ── Antipodal Marker ────────────────────────────────────
+    const antiGroup = new THREE.Group();
+    scene.add(antiGroup);
+
+    // Glowing cyan dot
+    const antiMarkerGeo = new THREE.SphereGeometry(0.08, 16, 16);
+    const antiMarkerMat = new THREE.MeshBasicMaterial({ color: 0x00ddff });
+    const antiMarker = new THREE.Mesh(antiMarkerGeo, antiMarkerMat);
+    antiGroup.add(antiMarker);
+
+    // Glow sprite (cyan)
+    const antiGlowCanvas = document.createElement('canvas');
+    antiGlowCanvas.width = 64; antiGlowCanvas.height = 64;
+    const agCtx = antiGlowCanvas.getContext('2d');
+    const antiGradient = agCtx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    antiGradient.addColorStop(0, 'rgba(0,221,255,0.8)');
+    antiGradient.addColorStop(0.3, 'rgba(0,221,255,0.3)');
+    antiGradient.addColorStop(1, 'rgba(0,221,255,0)');
+    agCtx.fillStyle = antiGradient;
+    agCtx.fillRect(0, 0, 64, 64);
+    const antiGlowTexture = new THREE.CanvasTexture(antiGlowCanvas);
+    const antiGlowSprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: antiGlowTexture, transparent: true, depthWrite: false })
+    );
+    antiGlowSprite.scale.set(0.8, 0.8, 1);
+    antiGroup.add(antiGlowSprite);
+
+    // Antipodal label
+    const antiLabelCanvas = document.createElement('canvas');
+    antiLabelCanvas.width = 256; antiLabelCanvas.height = 32;
+    const alCtx = antiLabelCanvas.getContext('2d');
+    alCtx.font = 'bold 18px monospace';
+    alCtx.fillStyle = '#00ddff';
+    alCtx.fillText('ANTIPODAL', 4, 22);
+    const antiLabelTexture = new THREE.CanvasTexture(antiLabelCanvas);
+    const antiLabelSprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: antiLabelTexture, transparent: true, depthWrite: false })
+    );
+    antiLabelSprite.scale.set(1.4, 0.2, 1);
+    antiLabelSprite.position.set(0.8, 0.2, 0);
+    antiGroup.add(antiLabelSprite);
+
     // ── ISS position state ───────────────────────────────────
     let currentPos = new THREE.Vector3();
     let targetPos = new THREE.Vector3();
+    let antiCurrentPos = new THREE.Vector3();
+    let antiTargetPos = new THREE.Vector3();
     let hasPosition = false;
     let lastFetchTime = 0;
     let consecutiveErrors = 0;
@@ -336,12 +382,24 @@
       lastFetchTime = Date.now();
       consecutiveErrors = 0;
 
+      // Compute antipodal point
+      const antiLat = -lat;
+      const antiLon = lon > 0 ? lon - 180 : lon + 180;
+      antiTargetPos = latLonToVec3(antiLat, antiLon, EARTH_RADIUS);
+      if (!antiCurrentPos.lengthSq()) {
+        antiCurrentPos.copy(antiTargetPos);
+      }
+
       // Update info panel
       document.getElementById('info-panel').style.display = 'block';
       document.getElementById('lat-val').textContent =
         `${Math.abs(lat).toFixed(4)}° ${lat >= 0 ? 'N' : 'S'}`;
       document.getElementById('lon-val').textContent =
         `${Math.abs(lon).toFixed(4)}° ${lon >= 0 ? 'E' : 'W'}`;
+      document.getElementById('anti-lat-val').textContent =
+        `${Math.abs(antiLat).toFixed(4)}° ${antiLat >= 0 ? 'N' : 'S'}`;
+      document.getElementById('anti-lon-val').textContent =
+        `${Math.abs(antiLon).toFixed(4)}° ${antiLon >= 0 ? 'E' : 'W'}`;
       document.getElementById('connection-lost').style.display = 'none';
       updateOrbitTrail(lat, lon);
     }
@@ -466,8 +524,12 @@
       if (hasPosition) {
         currentPos.lerp(targetPos, 0.08);
         issGroup.position.copy(currentPos);
-        // Orient the label to face outward from globe center
         issGroup.lookAt(currentPos.clone().multiplyScalar(2));
+
+        // Lerp antipodal position
+        antiCurrentPos.lerp(antiTargetPos, 0.08);
+        antiGroup.position.copy(antiCurrentPos);
+        antiGroup.lookAt(antiCurrentPos.clone().multiplyScalar(2));
       }
 
       // Update "updated X seconds ago"
