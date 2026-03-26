@@ -166,6 +166,59 @@
     // ── Ambient light (so textures are visible) ──────────────
     scene.add(new THREE.AmbientLight(0xffffff, 1.5));
 
+    // ── Earth globe ──────────────────────────────────────────
+    const textureLoader = new THREE.TextureLoader();
+    const earthGroup = new THREE.Group();
+    scene.add(earthGroup);
+
+    // Earth sphere
+    const earthGeo = new THREE.SphereGeometry(EARTH_RADIUS, 64, 64);
+    const earthMat = new THREE.MeshStandardMaterial({
+      map: textureLoader.load(
+        'https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-blue-marble.jpg',
+        undefined,
+        undefined,
+        () => {
+          // Fallback: solid blue sphere if texture fails
+          earthMat.map = null;
+          earthMat.color.set(0x2266aa);
+          earthMat.needsUpdate = true;
+        }
+      ),
+      roughness: 1,
+      metalness: 0,
+    });
+    const earthMesh = new THREE.Mesh(earthGeo, earthMat);
+    earthGroup.add(earthMesh);
+
+    // Atmosphere glow (Fresnel-based)
+    const atmosphereGeo = new THREE.SphereGeometry(EARTH_RADIUS * 1.02, 64, 64);
+    const atmosphereMat = new THREE.ShaderMaterial({
+      vertexShader: `
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+        void main() {
+          vNormal = normalize(normalMatrix * normal);
+          vPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+        void main() {
+          vec3 viewDir = normalize(-vPosition);
+          float fresnel = 1.0 - dot(viewDir, vNormal);
+          fresnel = pow(fresnel, 3.0);
+          gl_FragColor = vec4(0.4, 0.7, 1.0, fresnel * 0.6);
+        }
+      `,
+      transparent: true,
+      side: THREE.FrontSide,
+      depthWrite: false,
+    });
+    scene.add(new THREE.Mesh(atmosphereGeo, atmosphereMat));
+
     // ── Resize handler ───────────────────────────────────────
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth / window.innerHeight;
