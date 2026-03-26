@@ -267,6 +267,105 @@
     const nightMesh = new THREE.Mesh(nightGeo, nightMat);
     earthGroup.add(nightMesh);
 
+    // ── Coordinate helpers ───────────────────────────────────
+    function latLonToVec3(lat, lon, radius) {
+      const phi = (90 - lat) * (Math.PI / 180);
+      const theta = (lon + 180) * (Math.PI / 180);
+      return new THREE.Vector3(
+        -radius * Math.sin(phi) * Math.cos(theta),
+         radius * Math.cos(phi),
+         radius * Math.sin(phi) * Math.sin(theta)
+      );
+    }
+
+    // ── ISS Marker ───────────────────────────────────────────
+    const issGroup = new THREE.Group();
+    scene.add(issGroup);
+
+    // Glowing red dot
+    const issMarkerGeo = new THREE.SphereGeometry(0.08, 16, 16);
+    const issMarkerMat = new THREE.MeshBasicMaterial({ color: 0xff4444 });
+    const issMarker = new THREE.Mesh(issMarkerGeo, issMarkerMat);
+    issGroup.add(issMarker);
+
+    // Glow sprite
+    const glowCanvas = document.createElement('canvas');
+    glowCanvas.width = 64; glowCanvas.height = 64;
+    const gCtx = glowCanvas.getContext('2d');
+    const gradient = gCtx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gradient.addColorStop(0, 'rgba(255,68,68,0.8)');
+    gradient.addColorStop(0.3, 'rgba(255,68,68,0.3)');
+    gradient.addColorStop(1, 'rgba(255,68,68,0)');
+    gCtx.fillStyle = gradient;
+    gCtx.fillRect(0, 0, 64, 64);
+    const glowTexture = new THREE.CanvasTexture(glowCanvas);
+    const glowSprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: glowTexture, transparent: true, depthWrite: false })
+    );
+    glowSprite.scale.set(0.8, 0.8, 1);
+    issGroup.add(glowSprite);
+
+    // ISS label
+    const labelCanvas = document.createElement('canvas');
+    labelCanvas.width = 128; labelCanvas.height = 32;
+    const lCtx = labelCanvas.getContext('2d');
+    lCtx.font = 'bold 20px monospace';
+    lCtx.fillStyle = '#ff6666';
+    lCtx.fillText('ISS', 4, 22);
+    const labelTexture = new THREE.CanvasTexture(labelCanvas);
+    const labelSprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: labelTexture, transparent: true, depthWrite: false })
+    );
+    labelSprite.scale.set(0.8, 0.2, 1);
+    labelSprite.position.set(0.5, 0.2, 0);
+    issGroup.add(labelSprite);
+
+    // ── ISS position state ───────────────────────────────────
+    let currentPos = new THREE.Vector3();
+    let targetPos = new THREE.Vector3();
+    let hasPosition = false;
+    let lastFetchTime = 0;
+    let consecutiveErrors = 0;
+
+    function updateISSPosition(lat, lon) {
+      targetPos = latLonToVec3(lat, lon, EARTH_RADIUS + ISS_ALTITUDE);
+      if (!hasPosition) {
+        currentPos.copy(targetPos);
+        hasPosition = true;
+      }
+      lastFetchTime = Date.now();
+      consecutiveErrors = 0;
+
+      // Update info panel
+      document.getElementById('info-panel').style.display = 'block';
+      document.getElementById('lat-val').textContent =
+        `${Math.abs(lat).toFixed(4)}° ${lat >= 0 ? 'N' : 'S'}`;
+      document.getElementById('lon-val').textContent =
+        `${Math.abs(lon).toFixed(4)}° ${lon >= 0 ? 'E' : 'W'}`;
+      document.getElementById('connection-lost').style.display = 'none';
+    }
+
+    // ── API Polling ──────────────────────────────────────────
+    async function fetchISS() {
+      try {
+        const res = await fetch('http://api.open-notify.org/iss-now.json');
+        const data = await res.json();
+        if (data.message === 'success') {
+          updateISSPosition(
+            parseFloat(data.iss_position.latitude),
+            parseFloat(data.iss_position.longitude)
+          );
+        }
+      } catch {
+        consecutiveErrors++;
+        if (consecutiveErrors >= 3) {
+          document.getElementById('connection-lost').style.display = 'block';
+        }
+      }
+    }
+    fetchISS();
+    setInterval(fetchISS, POLL_INTERVAL);
+
     // ── Resize handler ───────────────────────────────────────
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth / window.innerHeight;
@@ -278,6 +377,20 @@
     function animate() {
       requestAnimationFrame(animate);
       controls.update();
+
+      // Lerp ISS position
+      if (hasPosition) {
+        currentPos.lerp(targetPos, 0.08);
+        issGroup.position.copy(currentPos);
+        // Orient the label to face outward from globe center
+        issGroup.lookAt(currentPos.clone().multiplyScalar(2));
+      }
+
+      // Update "updated X seconds ago"
+      if (lastFetchTime) {
+        const ago = Math.floor((Date.now() - lastFetchTime) / 1000);
+        document.getElementById('updated-time').textContent = `Updated: ${ago}s ago`;
+      }
 
       // Update sun position every frame (cheap — just trig)
       nightMat.uniforms.sunDir.value.copy(getSunDirection());
