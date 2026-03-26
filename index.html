@@ -367,6 +367,20 @@
     fetchISS();
     setInterval(fetchISS, POLL_INTERVAL);
 
+    // ── Crew Data (fetched once) ─────────────────────────────
+    async function fetchCrew() {
+      try {
+        const res = await fetch('http://api.open-notify.org/astros.json');
+        const data = await res.json();
+        const issCrew = data.people.filter(p => p.craft === 'ISS');
+        document.getElementById('crew-count').textContent = `${issCrew.length} aboard`;
+        document.getElementById('crew-list').innerHTML = issCrew.map(p => p.name).join('<br>');
+      } catch {
+        document.getElementById('crew-count').textContent = '—';
+      }
+    }
+    fetchCrew();
+
     // ── Orbit Trail ──────────────────────────────────────────
     const ORBIT_POINTS = 200;
     const orbitGeo = new THREE.BufferGeometry();
