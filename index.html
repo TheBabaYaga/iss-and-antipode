@@ -25,6 +25,16 @@
     #info-panel .divider { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(100,150,255,0.15); }
     #info-panel .updated { margin-top: 8px; font-size: 10px; color: rgba(255,255,255,0.3); }
     #info-panel .crew-list { margin-top: 4px; font-size: 11px; color: rgba(255,255,255,0.6); line-height: 1.6; }
+    #info-panel .jump-btns { display: flex; gap: 6px; margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(100,150,255,0.15); }
+    #info-panel .jump-btn {
+      flex: 1; padding: 5px 0; border: 1px solid; border-radius: 4px;
+      font-family: monospace; font-size: 11px; font-weight: bold;
+      cursor: pointer; background: transparent; transition: background 0.2s;
+    }
+    #info-panel .jump-btn.iss { color: #ff4444; border-color: rgba(255,68,68,0.4); }
+    #info-panel .jump-btn.iss:hover { background: rgba(255,68,68,0.15); }
+    #info-panel .jump-btn.anti { color: #00ddff; border-color: rgba(0,221,255,0.4); }
+    #info-panel .jump-btn.anti:hover { background: rgba(0,221,255,0.15); }
 
     /* Title — top-right */
     #title-bar {
@@ -71,11 +81,17 @@
     <div class="row"><span class="label">LON</span>&ensp;<span class="value" id="lon-val">—</span></div>
     <div class="row" style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(0,221,255,0.15);"><span class="label" style="color:rgba(0,221,255,0.5);">A-LAT</span>&ensp;<span class="value" id="anti-lat-val" style="color:#00ddff;">—</span></div>
     <div class="row"><span class="label" style="color:rgba(0,221,255,0.5);">A-LON</span>&ensp;<span class="value" id="anti-lon-val" style="color:#00ddff;">—</span></div>
+    <div class="row"><span class="label" style="color:rgba(0,221,255,0.5);">A-ELEV</span>&ensp;<span class="value" id="anti-elev-val" style="color:#00ddff;">—</span></div>
+    <div class="row"><span class="label" style="color:rgba(0,221,255,0.5);">A-DIST</span>&ensp;<span class="value" id="anti-dist-val" style="color:#00ddff;">—</span></div>
     <div class="row"><span class="label">ALT</span>&ensp;<span class="value">~408 km</span></div>
     <div class="row"><span class="label">SPD</span>&ensp;<span class="value">~27,600 km/h</span></div>
     <div class="divider">
       <div class="row"><span class="label">CREW</span>&ensp;<span class="value" id="crew-count">—</span></div>
       <div class="crew-list" id="crew-list"></div>
+    </div>
+    <div class="jump-btns">
+      <button class="jump-btn iss" id="jump-iss">JUMP TO ISS</button>
+      <button class="jump-btn anti" id="jump-anti">JUMP TO ANTI</button>
     </div>
     <div class="updated" id="updated-time">Updated: —</div>
   </div>
@@ -149,6 +165,31 @@
       if (e.buttons > 0) resetIdleTimer();
     });
     renderer.domElement.addEventListener('wheel', resetIdleTimer);
+
+    // ── Jump-to-target camera animation (spherical arc) ────
+    let jumpAnim = null; // { startQ, endQ, dist, startTime, duration }
+    const _jumpQ = new THREE.Quaternion();
+    function jumpTo(targetPos) {
+      const dist = camera.position.length();
+      const startDir = camera.position.clone().normalize();
+      const endDir = targetPos.clone().normalize();
+      // Quaternion that rotates startDir to endDir
+      const startQ = new THREE.Quaternion();
+      const endQ = new THREE.Quaternion().setFromUnitVectors(startDir, endDir);
+      // Scale duration by angle (min 400ms, max 1600ms)
+      const angle = startDir.angleTo(endDir);
+      const duration = 400 + (angle / Math.PI) * 1200;
+      jumpAnim = { startDir, startQ, endQ, dist, startTime: performance.now(), duration };
+      controls.autoRotate = false;
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => { controls.autoRotate = true; }, AUTO_ROTATE_DELAY);
+    }
+    document.getElementById('jump-iss').addEventListener('click', () => {
+      if (hasPosition) jumpTo(currentPos);
+    });
+    document.getElementById('jump-anti').addEventListener('click', () => {
+      if (antiCurrentPos.lengthSq()) jumpTo(antiCurrentPos);
+    });
 
     // ── Starfield ────────────────────────────────────────────
     {
@@ -227,22 +268,37 @@
     earthGroup.add(new THREE.Mesh(atmosphereGeo, atmosphereMat));
 
     // ── Day/Night shading ────────────────────────────────────
-    // Compute sun direction from current UTC time (reuses cached Vector3)
+    // Compute accurate sun direction using the same astronomical algorithms as suncalc:
+    // Julian date → solar mean anomaly → ecliptic longitude → equatorial coords → subsolar point
     const _sunDir = new THREE.Vector3();
     function getSunDirection() {
       const now = new Date();
-      const dayOfYear = Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 86400000);
-      const utcHours = now.getUTCHours() + now.getUTCMinutes() / 60 + now.getUTCSeconds() / 3600;
+      const rad = Math.PI / 180;
+      // Days since J2000.0 epoch
+      const d = (now.valueOf() / 86400000 - 0.5 + 2440588) - 2451545;
 
-      // Solar longitude (approximate)
-      const solarLon = ((utcHours / 24) * 360 - 180) * (Math.PI / 180);
-      // Solar declination (approximate)
-      const declination = -23.44 * Math.cos((2 * Math.PI / 365) * (dayOfYear + 10)) * (Math.PI / 180);
+      // Sun ecliptic coordinates
+      const M = rad * (357.5291 + 0.98560028 * d); // mean anomaly
+      const C = rad * (1.9148 * Math.sin(M) + 0.02 * Math.sin(2 * M) + 0.0003 * Math.sin(3 * M)); // equation of center
+      const L = M + C + rad * 102.9372 + Math.PI; // ecliptic longitude
+      const obl = rad * 23.4397; // obliquity of the ecliptic
 
+      // Equatorial coordinates
+      const dec = Math.asin(Math.sin(obl) * Math.sin(L)); // declination
+      const ra = Math.atan2(Math.sin(L) * Math.cos(obl), Math.cos(L)); // right ascension
+
+      // Subsolar point: where the sun is directly overhead
+      const gst = rad * (280.16 + 360.9856235 * d); // Greenwich sidereal time
+      let subLon = ra - gst; // subsolar longitude in radians
+      subLon = ((subLon % (2 * Math.PI)) + 3 * Math.PI) % (2 * Math.PI) - Math.PI; // normalize to [-π, π]
+
+      // Convert to 3D vector (same coordinate system as latLonToVec3)
+      const phi = Math.PI / 2 - dec; // colatitude
+      const theta = subLon + Math.PI; // matches (lon+180) offset in latLonToVec3
       return _sunDir.set(
-        Math.cos(declination) * Math.cos(solarLon),
-        Math.sin(declination),
-        Math.cos(declination) * Math.sin(solarLon)
+        -Math.sin(phi) * Math.cos(theta),
+         Math.cos(phi),
+         Math.sin(phi) * Math.sin(theta)
       ).normalize();
     }
 
@@ -274,6 +330,17 @@
     });
     const nightMesh = new THREE.Mesh(nightGeo, nightMat);
     earthGroup.add(nightMesh);
+
+    // ── Real-world constants for distance computation ───────
+    const REAL_EARTH_RADIUS_KM = 6371;
+    const REAL_ISS_ALT_KM = 408;
+    const KM_TO_SCENE = EARTH_RADIUS / REAL_EARTH_RADIUS_KM;
+
+    function computeAntipodalDistanceKm(elevationM) {
+      const issR = REAL_EARTH_RADIUS_KM + REAL_ISS_ALT_KM;
+      const antiR = REAL_EARTH_RADIUS_KM + (elevationM || 0) / 1000;
+      return issR + antiR;
+    }
 
     // ── Coordinate helpers ───────────────────────────────────
     function latLonToVec3(lat, lon, radius) {
@@ -378,6 +445,10 @@
     let hasPosition = false;
     let lastFetchTime = 0;
     let consecutiveErrors = 0;
+    let lastElevationFetch = 0;
+    const ELEVATION_THROTTLE = 15000;
+    let antiElevationM = null;
+    let antiDistanceKm = null;
 
     function updateISSPosition(lat, lon) {
       targetPos = latLonToVec3(lat, lon, EARTH_RADIUS + ISS_ALTITUDE);
@@ -390,10 +461,17 @@
       // Compute antipodal point
       const antiLat = -lat;
       const antiLon = lon > 0 ? lon - 180 : lon + 180;
-      antiTargetPos = latLonToVec3(antiLat, antiLon, EARTH_RADIUS);
+      const elevKm = (antiElevationM || 0) / 1000;
+      antiTargetPos = latLonToVec3(antiLat, antiLon, EARTH_RADIUS + elevKm * KM_TO_SCENE);
       if (!antiCurrentPos.lengthSq()) {
         antiCurrentPos.copy(antiTargetPos);
       }
+
+      // Fetch elevation at antipodal point (throttled)
+      fetchElevation(antiLat, antiLon);
+
+      // Compute distance
+      antiDistanceKm = computeAntipodalDistanceKm(antiElevationM);
 
       // Update info panel
       document.getElementById('info-panel').style.display = 'block';
@@ -405,6 +483,10 @@
         `${Math.abs(antiLat).toFixed(4)}° ${antiLat >= 0 ? 'N' : 'S'}`;
       document.getElementById('anti-lon-val').textContent =
         `${Math.abs(antiLon).toFixed(4)}° ${antiLon >= 0 ? 'E' : 'W'}`;
+      document.getElementById('anti-elev-val').textContent =
+        antiElevationM !== null ? `${antiElevationM.toFixed(0)} m` : '—';
+      document.getElementById('anti-dist-val').textContent =
+        antiDistanceKm !== null ? `${antiDistanceKm.toFixed(1)} km` : '—';
       updateOrbitTrail(lat, lon);
     }
 
@@ -444,6 +526,24 @@
       }
     }
     fetchCrew();
+
+    // ── Elevation at Antipodal Point (throttled) ────────────
+    async function fetchElevation(lat, lon) {
+      const now = Date.now();
+      if (now - lastElevationFetch < ELEVATION_THROTTLE) return;
+      lastElevationFetch = now;
+      try {
+        const res = await fetch(
+          `https://api.open-meteo.com/v1/elevation?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}`
+        );
+        const data = await res.json();
+        if (data.elevation && data.elevation.length > 0) {
+          antiElevationM = data.elevation[0];
+        }
+      } catch {
+        // Keep previous value; graceful degradation
+      }
+    }
 
     // ── Orbit Trail ──────────────────────────────────────────
     const ORBIT_POINTS = 200;
@@ -534,6 +634,15 @@
     // ── Animation loop ─────────────────────────────────────
     function animate() {
       requestAnimationFrame(animate);
+      // Animate camera jump (spherical arc via quaternion slerp)
+      if (jumpAnim) {
+        const t = Math.min((performance.now() - jumpAnim.startTime) / jumpAnim.duration, 1);
+        const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; // easeInOutCubic
+        _jumpQ.slerpQuaternions(jumpAnim.startQ, jumpAnim.endQ, ease);
+        camera.position.copy(jumpAnim.startDir).applyQuaternion(_jumpQ).multiplyScalar(jumpAnim.dist);
+        if (t >= 1) jumpAnim = null;
+      }
+
       controls.update();
 
       // Lerp ISS position
